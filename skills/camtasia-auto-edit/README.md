@@ -68,7 +68,7 @@ Markers appear on the timeline ruler. Navigate with `Ctrl+]` / `Ctrl+[`.
 - **Tested on Windows.** Should work on macOS/Linux but has not been verified there.
 - **Whisper aggressively drops disfluencies.** The detector uses `small` (multilingual, not `.en`) with `condition_on_previous_text=False` and a verbatim prompt. Still misses some ums.
 - **Retake detection uses 4-word ngrams.** Shorter repeats (1-3 words) aren't flagged to avoid false positives.
-- **Marker drift after trimming.** Camtasia stores markers at absolute timeline times. When you ripple-delete content, markers stay put while audio shifts left — so markers after your cut become misaligned. Workaround: edit markers top-down (earliest first). Tracked as [issue #1](https://github.com/analyticendeavors/ae-agentic-skilling/issues/1).
+- **Marker placement.** By default, markers are written as **clip-level** markers attached to the recording's `StitchedMedia` group. Camtasia auto-adjusts these when you ripple-delete content, so they stay aligned with the audio they describe. Pass `--timeline-markers` if you want the older timeline-level behavior (markers stay at absolute timestamps and drift on trim).
 
 ## Files in this skill
 
