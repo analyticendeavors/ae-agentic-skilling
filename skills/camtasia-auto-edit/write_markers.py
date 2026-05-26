@@ -155,12 +155,47 @@ def _find_recording_stitched_media(project: dict) -> dict | None:
     return None
 
 
+def _clear_other_toc_locations(project: dict, keep_obj: dict | None) -> int:
+    """Clear keyframes from every `toc` parameter EXCEPT `keep_obj`.
+
+    Markers can live at both timeline-level and inside each StitchedMedia's
+    parameters. If markers are present in more than one place, Camtasia can
+    refuse to open the project. We use this when --replace is requested to
+    guarantee a single source of truth for markers.
+
+    Returns the total number of stale marker keyframes cleared.
+    """
+    cleared = 0
+
+    def _walk(node):
+        nonlocal cleared
+        if isinstance(node, dict):
+            params = node.get("parameters") if isinstance(node.get("parameters"), dict) else None
+            if params and isinstance(params.get("toc"), dict) and params["toc"] is not keep_obj:
+                kfs = params["toc"].get("keyframes") or []
+                if kfs:
+                    cleared += len(kfs)
+                    params["toc"]["keyframes"] = []
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(project)
+    return cleared
+
+
 def patch_project(project: dict, keyframes: list[dict], replace: bool, force_timeline: bool = False) -> tuple[int, int, str]:
     """Insert/merge keyframes into the right toc parameter.
 
     Prefers a clip-level toc on the recording's StitchedMedia (markers travel
     with the clip when content is trimmed). Falls back to timeline-level toc
     if no recording StitchedMedia is found, or if force_timeline=True.
+
+    With --replace, ALL other `toc.keyframes` arrays in the project are
+    cleared so the chosen location is the single source of truth. (Camtasia
+    can refuse to open projects that have markers split across locations.)
 
     Returns (existing_count, total_count_after, location_description).
     """
@@ -199,6 +234,9 @@ def patch_project(project: dict, keyframes: list[dict], replace: bool, force_tim
     existing = target_toc.get("keyframes") or []
 
     if replace:
+        stale = _clear_other_toc_locations(project, keep_obj=target_toc)
+        if stale:
+            print(f"Cleared {stale} stale marker(s) from other toc locations.", file=sys.stderr)
         merged = keyframes
     else:
         merged = list(existing) + keyframes
