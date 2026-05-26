@@ -1,0 +1,55 @@
+# ============================================================
+# Dependabot Configuration for ae-agentic-skilling.
+#
+# Skills are mostly Python (with some PowerShell). Dependabot watches:
+#   - pip dependencies (requirements.txt inside each skill folder)
+#   - GitHub Actions versions (.github/workflows/)
+#
+# Schedule: monthly on Fridays (low churn for a skills repo).
+# Patch updates auto-merge via dependabot-auto-merge.yml.
+# Minor/major still need human review.
+# ============================================================
+
+version: 2
+updates:
+  # Camtasia auto-edit skill (Python)
+  - package-ecosystem: pip
+    directory: "/skills/camtasia-auto-edit"
+    target-branch: "main"
+    schedule:
+      interval: monthly
+      day: friday
+      time: "13:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: deps
+      include: scope
+    groups:
+      all:
+        patterns:
+          - "*"
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: "/"
+    target-branch: "main"
+    schedule:
+      interval: monthly
+      day: friday
+      time: "13:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      actions:
+        patterns:
+          - "*"

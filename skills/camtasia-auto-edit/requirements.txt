@@ -1,0 +1,8 @@
+# Required
+faster-whisper==1.2.1
+
+# Optional (cough/breath/lip-smack detector; disabled by default with --skip-panns).
+# Comment these out if you don't need PANNs detection.
+panns_inference==0.1.1
+librosa==0.11.0
+soundfile==0.13.1

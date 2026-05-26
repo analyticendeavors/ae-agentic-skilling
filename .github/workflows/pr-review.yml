@@ -1,0 +1,336 @@
+# ============================================================
+# PR Code Review
+#
+# On every pull request, builds a review prompt with changed
+# files, diffs, and static analysis results, then sends it
+# to Claude via the CLI (claude -p). Posts findings as a PR
+# comment (updates on subsequent pushes).
+#
+# Auth: CLAUDE_CODE_OAUTH_TOKEN (Max subscription, no API cost)
+#
+# Security note: runs on `pull_request` (NOT `pull_request_target`).
+# This means PRs from forks cannot access secrets and will skip
+# the AI review. PRs from collaborators with push access run fully.
+# This is intentional -- prevents secret exfiltration via fork PRs.
+# ============================================================
+
+name: PR Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  pr-review:
+    name: Code Quality Review
+    # Skip Dependabot PRs: dep bumps are reviewed by their own changelogs/CI.
+    if: >
+      (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
+      && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Build review prompt
+        id: changes
+        run: |
+          set -eo pipefail
+          # Note: -u omitted intentionally. File content and diffs contain literal
+          # dollar signs that trigger unbound variable errors when echoed.
+
+          # Get changed files
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          else
+            BASE_SHA=$(git merge-base origin/main HEAD)
+            HEAD_SHA="HEAD"
+          fi
+
+          FILES=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" | head -50 || true)
+          echo "Changed files:"
+          echo "$FILES"
+
+          if [ -z "$FILES" ]; then
+            echo "No changed files detected."
+            echo "no_changes=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "no_changes=false" >> "$GITHUB_OUTPUT"
+
+          # Detect file type categories
+          HAS_PY=$(echo "$FILES" | grep -q '\.py$' && echo "true" || echo "false")
+          HAS_YML=$(echo "$FILES" | grep -q '\.yml$' && echo "true" || echo "false")
+          HAS_PS1=$(echo "$FILES" | grep -q '\.ps1$' && echo "true" || echo "false")
+          HAS_MD=$(echo "$FILES" | grep -q '\.md$' && echo "true" || echo "false")
+          HAS_SKILL=$(echo "$FILES" | grep -q '^skills/' && echo "true" || echo "false")
+          FILE_TYPE_SUMMARY="Python: ${HAS_PY} | Workflows: ${HAS_YML} | PowerShell: ${HAS_PS1} | Markdown: ${HAS_MD} | Touches skills/: ${HAS_SKILL}"
+          echo "File types: $FILE_TYPE_SUMMARY"
+
+          # Read CLAUDE.md (quality rules, source of truth)
+          CLAUDE_MD_FILE=$(mktemp)
+          if [ -f "CLAUDE.md" ]; then
+            cp CLAUDE.md "$CLAUDE_MD_FILE"
+          fi
+
+          # Get the diff (capped) into a temp file
+          DIFF_FILE=$(mktemp)
+          git diff "$BASE_SHA" "$HEAD_SHA" | head -800 > "$DIFF_FILE" 2>/dev/null || true
+
+          # ── Static analysis checks ──────────────────────────────
+          STATIC_FINDINGS=""
+
+          # Hardcoded secret patterns in source files
+          SECRET_HITS=""
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+            [ ! -f "$FILE" ] && continue
+            case "$FILE" in *.py|*.js|*.ts|*.json|*.ps1)
+              HITS=$(grep -nE '(api[_-]?key|token|password|secret|bearer)\s*[:=]\s*["\x27][A-Za-z0-9]' "$FILE" 2>/dev/null | grep -v 'secrets\.' | grep -v '\.env' | grep -v 'os\.environ' | grep -v 'process\.env' | head -5 || true)
+              if [ -n "$HITS" ]; then
+                SECRET_HITS="${SECRET_HITS}"$'\n'"${FILE}:"$'\n'"${HITS}"
+              fi
+              ;;
+            esac
+          done <<< "$FILES"
+          if [ -n "$SECRET_HITS" ]; then
+            STATIC_FINDINGS="${STATIC_FINDINGS}"$'\n\n'"### Possible Hardcoded Secrets"$'\n'"${SECRET_HITS}"
+          fi
+
+          # Hardcoded absolute paths (Windows C:\ or Unix /home /Users)
+          PATH_HITS=""
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+            [ ! -f "$FILE" ] && continue
+            case "$FILE" in *.py|*.js|*.ts|*.ps1|*.sh)
+              # Look for literal absolute paths with usernames
+              HITS=$(grep -nE '(C:\\\\Users\\\\[A-Za-z0-9]+|/home/[a-z]+/|/Users/[a-z]+/)' "$FILE" 2>/dev/null | head -5 || true)
+              if [ -n "$HITS" ]; then
+                PATH_HITS="${PATH_HITS}"$'\n'"${FILE}:"$'\n'"${HITS}"
+              fi
+              ;;
+            esac
+          done <<< "$FILES"
+          if [ -n "$PATH_HITS" ]; then
+            STATIC_FINDINGS="${STATIC_FINDINGS}"$'\n\n'"### Hardcoded Absolute Paths (portability issue)"$'\n'"${PATH_HITS}"
+          fi
+
+          # Workflow YAML checks
+          WORKFLOW_FINDINGS=""
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+            [ ! -f "$FILE" ] && continue
+            case "$FILE" in .github/workflows/*.yml|.github/workflows/*.yaml)
+              if ! grep -q 'timeout-minutes' "$FILE" 2>/dev/null; then
+                WORKFLOW_FINDINGS="${WORKFLOW_FINDINGS}"$'\n'"${FILE}: missing timeout-minutes"
+              fi
+              if ! grep -q 'permissions:' "$FILE" 2>/dev/null; then
+                WORKFLOW_FINDINGS="${WORKFLOW_FINDINGS}"$'\n'"${FILE}: missing permissions block"
+              fi
+              CURL_NO_TIMEOUT=$(grep -n 'curl ' "$FILE" 2>/dev/null | grep -v 'max-time' | head -5 || true)
+              if [ -n "$CURL_NO_TIMEOUT" ]; then
+                WORKFLOW_FINDINGS="${WORKFLOW_FINDINGS}"$'\n'"${FILE}: curl call(s) without --max-time:"$'\n'"${CURL_NO_TIMEOUT}"
+              fi
+              ;;
+            esac
+          done <<< "$FILES"
+          if [ -n "$WORKFLOW_FINDINGS" ]; then
+            STATIC_FINDINGS="${STATIC_FINDINGS}"$'\n\n'"### Workflow Quality"$'\n'"${WORKFLOW_FINDINGS}"
+          fi
+
+          # Skill folder structure checks
+          SKILL_FINDINGS=""
+          # For each changed skill folder, confirm SKILL.md and README.md exist
+          CHANGED_SKILLS=$(echo "$FILES" | grep '^skills/' | awk -F/ '{print $2}' | sort -u || true)
+          while IFS= read -r SKILL; do
+            [ -z "$SKILL" ] && continue
+            if [ ! -f "skills/$SKILL/SKILL.md" ]; then
+              SKILL_FINDINGS="${SKILL_FINDINGS}"$'\n'"skills/${SKILL}/: missing SKILL.md"
+            fi
+            if [ ! -f "skills/$SKILL/README.md" ]; then
+              SKILL_FINDINGS="${SKILL_FINDINGS}"$'\n'"skills/${SKILL}/: missing README.md"
+            fi
+          done <<< "$CHANGED_SKILLS"
+          if [ -n "$SKILL_FINDINGS" ]; then
+            STATIC_FINDINGS="${STATIC_FINDINGS}"$'\n\n'"### Skill Structure"$'\n'"${SKILL_FINDINGS}"
+          fi
+
+          # Doc-staleness check: did scripts in a skill change without README/SKILL.md updates?
+          DOCSTALE_FINDINGS=""
+          while IFS= read -r SKILL; do
+            [ -z "$SKILL" ] && continue
+            SCRIPTS_CHANGED=$(echo "$FILES" | grep "^skills/$SKILL/" | grep -vE '\.(md|txt)$' || true)
+            DOCS_CHANGED=$(echo "$FILES" | grep "^skills/$SKILL/" | grep -E '\.(md)$' || true)
+            if [ -n "$SCRIPTS_CHANGED" ] && [ -z "$DOCS_CHANGED" ]; then
+              DOCSTALE_FINDINGS="${DOCSTALE_FINDINGS}"$'\n'"skills/${SKILL}/: scripts changed but no README.md or SKILL.md update in this PR"
+            fi
+          done <<< "$CHANGED_SKILLS"
+          if [ -n "$DOCSTALE_FINDINGS" ]; then
+            STATIC_FINDINGS="${STATIC_FINDINGS}"$'\n\n'"### Doc Staleness"$'\n'"${DOCSTALE_FINDINGS}"
+          fi
+
+          # Read head + tail of changed text files
+          FILE_CONTENTS_FILE=$(mktemp)
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+            [ ! -f "$FILE" ] && continue
+            case "$FILE" in
+              *.png|*.jpg|*.jpeg|*.gif|*.svg|*.ico|*.pdf|*.zip|*.woff2|*.woff|*.ttf|*.log|*.mp4|*.mov|*.trec|*.wav)
+                continue ;;
+            esac
+            printf '\n\n=== FILE: %s (head) ===\n' "$FILE" >> "$FILE_CONTENTS_FILE"
+            head -80 "$FILE" >> "$FILE_CONTENTS_FILE" 2>/dev/null || true
+            printf '\n=== FILE: %s (tail) ===\n' "$FILE" >> "$FILE_CONTENTS_FILE"
+            tail -50 "$FILE" >> "$FILE_CONTENTS_FILE" 2>/dev/null || true
+            printf '\n=== END FILE ===\n' >> "$FILE_CONTENTS_FILE"
+          done <<< "$FILES"
+
+          # Build the full prompt
+          PR_NUMBER="${{ github.event.pull_request.number || 'manual' }}"
+          PR_TITLE="${{ github.event.pull_request.title || 'Manual run' }}"
+
+          {
+            echo "You are reviewing a Pull Request for the ae-agentic-skilling repository -- a PUBLIC, open-source collection of reusable Claude Code skills. All context is provided below; do NOT try to read files from disk."
+            echo ""
+            echo "PR #${PR_NUMBER}: \"${PR_TITLE}\""
+            echo ""
+            echo "## CLAUDE.md (Quality Rules, Source of Truth)"
+            echo ""
+            cat "$CLAUDE_MD_FILE"
+            echo ""
+            echo "## Changed File Types"
+            echo ""
+            echo "$FILE_TYPE_SUMMARY"
+            echo ""
+            echo "## Changed Files"
+            echo ""
+            echo "$FILES"
+            echo ""
+            echo "## Diff"
+            echo ""
+            cat "$DIFF_FILE"
+            echo ""
+            echo "## Static Analysis Findings"
+            echo ""
+            echo "${STATIC_FINDINGS:-None detected}"
+            echo ""
+            echo "## Full File Contents (head + tail excerpts)"
+            echo ""
+            cat "$FILE_CONTENTS_FILE"
+            echo ""
+            echo "## Your Task"
+            echo ""
+            echo "Review the changed files against the CLAUDE.md quality rules. This is a PUBLIC repo so portability and hygiene matter more than in a private one. Focus on what CHANGED in this PR."
+            echo ""
+            echo "Check (in priority order):"
+            echo "1. **Security**: no hardcoded secrets, tokens, credentials, or API keys"
+            echo "2. **Portability**: no hardcoded absolute paths (C:\\\\Users\\\\<name>, /home/<user>, /Users/<user>). External binaries must be looked up via shutil.which() or env vars."
+            echo "3. **Skill structure**: every skill folder under skills/ must have SKILL.md + README.md. SKILL.md must have YAML frontmatter with name + description."
+            echo "4. **Doc-staleness**: if a skill's scripts changed, the skill's README.md or SKILL.md should be updated in the same PR. Pure refactors with no behavior change can pass without doc updates if the PR description says so."
+            echo "5. **Workflow quality**: timeout-minutes, permissions blocks, set -euo pipefail, --max-time on curl, cron comments"
+            echo "6. **Python quality**: argparse for CLI args, errors to stderr, non-zero exit on failure, pinned versions in requirements.txt"
+            echo "7. **General**: clear actionable error messages, runnable examples in READMEs"
+            echo ""
+            echo "Output one of: APPROVED, CHANGES REQUESTED, or BLOCKED, followed by specific findings organized by category. Info-only observations that do not require changes should still result in APPROVED."
+          } > prompt.txt
+          rm -f "$FILE_CONTENTS_FILE" "$DIFF_FILE" "$CLAUDE_MD_FILE"
+
+      - name: Install Claude Code CLI
+        if: steps.changes.outputs.no_changes != 'true'
+        run: |
+          set -euo pipefail
+          npm install -g @anthropic-ai/claude-code
+
+      - name: Run pr-review analysis
+        id: review
+        if: steps.changes.outputs.no_changes != 'true'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Fork PRs cannot access secrets. Detect and skip cleanly.
+          if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+            {
+              echo "## PR Review Agent Skipped"
+              echo ""
+              echo "This PR appears to be from a fork. PRs from forks do not have access to repository secrets (this is a security feature) so the AI review is skipped."
+              echo ""
+              echo "A maintainer can run the review manually after reviewing the PR contents."
+            } > review_result.txt
+            echo "agent_failed=false" >> "$GITHUB_OUTPUT"
+            echo "agent_skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          RESPONSE=$(claude -p --no-session-persistence --max-turns 1 --output-format text < prompt.txt 2>claude_stderr.txt) || true
+          STDERR_OUT=$(cat claude_stderr.txt 2>/dev/null || true)
+
+          if [ ${#RESPONSE} -lt 50 ]; then
+            {
+              echo "## PR Review Agent Error"
+              echo ""
+              echo "Claude returned too short a response (${#RESPONSE} chars). Manual review recommended."
+              [ -n "$STDERR_OUT" ] && echo "" && echo "stderr: $STDERR_OUT"
+            } > review_result.txt
+            echo "agent_failed=true" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s' "$RESPONSE" > review_result.txt
+            echo "agent_failed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post PR comment
+        if: github.event_name == 'pull_request' && steps.changes.outputs.no_changes != 'true' && steps.review.outcome != 'skipped' && always()
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('review_result.txt')) {
+              core.warning('review_result.txt not found; review agent may have failed to start');
+              return;
+            }
+            const review = fs.readFileSync('review_result.txt', 'utf8');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+
+            const botComment = comments.find(c =>
+              c.body.includes('AE Skills Code Review')
+            );
+
+            const body = `## AE Skills Code Review\n\n${review}\n\n---\n\n*Generated by [Claude Code](https://claude.com/claude-code) via pr-review.yml. Updates on every push.*`;
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body
+              });
+            }
+
+      - name: Warn if agent errored
+        if: steps.review.outputs.agent_failed == 'true'
+        run: |
+          echo "::warning::PR review agent returned an error. Check the PR comment for details. (Non-blocking: AI review is advisory.)"
