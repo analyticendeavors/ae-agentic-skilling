@@ -69,6 +69,8 @@ Markers appear on the timeline ruler. Navigate with `Ctrl+]` / `Ctrl+[`.
 - **Whisper aggressively drops disfluencies.** The detector uses `small` (multilingual, not `.en`) with `condition_on_previous_text=False` and a verbatim prompt. Still misses some ums.
 - **Retake detection uses 4-word ngrams.** Shorter repeats (1-3 words) aren't flagged to avoid false positives.
 - **Marker placement.** By default, markers are written as **clip-level** markers attached to the recording's `StitchedMedia` group. Camtasia auto-adjusts these when you ripple-delete content, so they stay aligned with the audio they describe. Pass `--timeline-markers` if you want the older timeline-level behavior (markers stay at absolute timestamps and drift on trim).
+- **Fallback behavior.** If the writer can't find a `StitchedMedia` that matches a `.trec` source (e.g. you haven't dragged the recording onto the timeline yet), it falls back to **timeline-level** markers and prints a `WARNING` to stderr. Timeline-level markers do **not** move when you trim content. To get clip-anchored markers, drag the recording onto the timeline first, then re-run this tool.
+- **Single source of truth for markers.** When you pass `--replace`, the tool clears stale marker keyframes from every `toc` location in the project, not just the target. Camtasia can refuse to open projects that have markers split across both clip-level and timeline-level locations, so the tool guarantees a single source.
 
 ## Files in this skill
 

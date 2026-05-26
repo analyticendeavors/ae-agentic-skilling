@@ -124,22 +124,20 @@ def _recording_idents(project: dict) -> set[str]:
     return idents
 
 
-def _iter_stitched_media(node, path=None):
-    """Yield (parent_dict_holding_the_match, key) for every StitchedMedia we find.
+def _iter_stitched_media(node):
+    """Yield every StitchedMedia dict found in the project tree.
 
-    Depth-first walk of the project dict. Yields the dicts themselves
-    so the caller can mutate parameters in place.
+    Depth-first walk. Yields the dicts themselves so the caller can mutate
+    parameters in place.
     """
-    if path is None:
-        path = []
     if isinstance(node, dict):
         if node.get("_type") == "StitchedMedia":
             yield node
-        for k, v in node.items():
-            yield from _iter_stitched_media(v, path + [k])
+        for v in node.values():
+            yield from _iter_stitched_media(v)
     elif isinstance(node, list):
-        for i, item in enumerate(node):
-            yield from _iter_stitched_media(item, path + [i])
+        for item in node:
+            yield from _iter_stitched_media(item)
 
 
 def _find_recording_stitched_media(project: dict) -> dict | None:
@@ -157,12 +155,47 @@ def _find_recording_stitched_media(project: dict) -> dict | None:
     return None
 
 
+def _clear_other_toc_locations(project: dict, keep_obj: dict | None) -> int:
+    """Clear keyframes from every `toc` parameter EXCEPT `keep_obj`.
+
+    Markers can live at both timeline-level and inside each StitchedMedia's
+    parameters. If markers are present in more than one place, Camtasia can
+    refuse to open the project. We use this when --replace is requested to
+    guarantee a single source of truth for markers.
+
+    Returns the total number of stale marker keyframes cleared.
+    """
+    cleared = 0
+
+    def _walk(node):
+        nonlocal cleared
+        if isinstance(node, dict):
+            params = node.get("parameters") if isinstance(node.get("parameters"), dict) else None
+            if params and isinstance(params.get("toc"), dict) and params["toc"] is not keep_obj:
+                kfs = params["toc"].get("keyframes") or []
+                if kfs:
+                    cleared += len(kfs)
+                    params["toc"]["keyframes"] = []
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(project)
+    return cleared
+
+
 def patch_project(project: dict, keyframes: list[dict], replace: bool, force_timeline: bool = False) -> tuple[int, int, str]:
     """Insert/merge keyframes into the right toc parameter.
 
     Prefers a clip-level toc on the recording's StitchedMedia (markers travel
     with the clip when content is trimmed). Falls back to timeline-level toc
     if no recording StitchedMedia is found, or if force_timeline=True.
+
+    With --replace, ALL other `toc.keyframes` arrays in the project are
+    cleared so the chosen location is the single source of truth. (Camtasia
+    can refuse to open projects that have markers split across locations.)
 
     Returns (existing_count, total_count_after, location_description).
     """
@@ -180,15 +213,30 @@ def patch_project(project: dict, keyframes: list[dict], replace: bool, force_tim
     if target_toc is None:
         timeline = project.get("timeline")
         if timeline is None:
-            raise KeyError("project has no 'timeline' key and no recording StitchedMedia")
+            if force_timeline:
+                raise KeyError("--timeline-markers requested but project has no 'timeline' key")
+            raise KeyError("project has no 'timeline' key and no recording StitchedMedia found")
         parameters = timeline.setdefault("parameters", {})
         target_toc = parameters.setdefault("toc", {"type": "string", "keyframes": []})
-        location = "timeline-level (no recording StitchedMedia found) -- markers will drift on trim"
+        if force_timeline:
+            location = "timeline-level (forced via --timeline-markers) -- markers will not move on trim"
+        else:
+            print(
+                "WARNING: No recording StitchedMedia found in the project. Falling back to\n"
+                "         timeline-level markers, which DO NOT move when the user trims content.\n"
+                "         To get clip-anchored markers, drag the recording onto the timeline first,\n"
+                "         then re-run this tool.",
+                file=sys.stderr,
+            )
+            location = "timeline-level (FALLBACK -- no recording StitchedMedia found) -- markers will drift on trim"
 
     target_toc.setdefault("type", "string")
     existing = target_toc.get("keyframes") or []
 
     if replace:
+        stale = _clear_other_toc_locations(project, keep_obj=target_toc)
+        if stale:
+            print(f"Cleared {stale} stale marker(s) from other toc locations.", file=sys.stderr)
         merged = keyframes
     else:
         merged = list(existing) + keyframes
