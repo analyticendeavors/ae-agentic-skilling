@@ -2,7 +2,7 @@
 
 Reusable [Claude Code](https://docs.claude.com/en/docs/claude-code) skills, started by [Analytic Endeavors](https://analyticendeavors.com), open to community contribution.
 
-A **skill** is a small bundle of instructions + scripts that Claude Code can invoke on demand. Skills live in your `~/.claude/skills/` folder and are triggered by natural-language phrases. This repo collects skills that solve real, repeatable problems.
+A **skill** is a small bundle of instructions + scripts that Claude Code can invoke on demand. Skills live in your `~/.claude/skills/` folder and are triggered by natural-language phrases. This repo collects skills that solve real, repeatable problems — fork it, copy what you need, contribute back what works.
 
 ## Skills
 
