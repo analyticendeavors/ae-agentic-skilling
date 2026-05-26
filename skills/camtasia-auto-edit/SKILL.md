@@ -63,10 +63,14 @@ The user keeps full control: every detection becomes a marker, nothing is auto-c
 
 ## Marker schema (Camtasia internals)
 
-Camtasia stores markers as **keyframes on a timeline-level `toc` parameter**, not as a separate markers array:
+Camtasia stores markers as keyframes on a `toc` (table-of-contents) parameter. They can live at TWO levels:
+
+**Clip-level (preferred, default).** Inside a `StitchedMedia` group's `parameters.toc.keyframes`. Camtasia auto-adjusts the times when the user trims or ripple-deletes content within the clip, so markers stay aligned with the audio they describe:
 
 ```json
-"timeline": {
+{
+  "_type": "StitchedMedia",
+  "attributes": { "ident": "Rec 5-20-2026-3-27-37-PM" },
   "parameters": {
     "toc": {
       "type": "string",
@@ -78,7 +82,11 @@ Camtasia stores markers as **keyframes on a timeline-level `toc` parameter**, no
 }
 ```
 
-`time` is in ticks. The project's `editRate` (top-level field) gives ticks-per-second — typically `705600000`. So `ticks = seconds * editRate`.
+**Timeline-level (fallback).** At `timeline.parameters.toc.keyframes`. Same keyframe shape, but markers do NOT move when content is trimmed -- they stay at absolute timeline times. The tool falls back to this only if no recording `StitchedMedia` is found in the project.
+
+The writer identifies the right `StitchedMedia` by matching its `attributes.ident` against `.trec` filenames in the project's `sourceBin`. If you have multiple recordings on the timeline, markers go to the first one matched.
+
+`time` is in ticks. The project's `editRate` (top-level field) gives ticks-per-second -- typically `705600000`. So `ticks = seconds * editRate`.
 
 ## Files in this skill
 
@@ -98,7 +106,7 @@ Camtasia stores markers as **keyframes on a timeline-level `toc` parameter**, no
 - Whisper's `.en` models drop disfluencies. The detector uses `small` (multilingual) with `condition_on_previous_text=False` and an `initial_prompt` nudging verbatim output. Still misses some ums.
 - Retake detection uses 4-word ngrams. Shorter repeats (1-3 words) aren't flagged to avoid false positives.
 - The `.trec` is a standard MP4 container so ffmpeg reads the AAC audio directly; no special Camtasia export needed.
-- **Marker drift after trimming**: Camtasia stores markers at absolute timeline times, not anchored to clips. When the user ripple-deletes content, markers stay put while audio shifts left. Workaround: edit markers top-down. Tracked as repo issue #1.
+- Markers are written as **clip-level** by default (attached to the recording's `StitchedMedia`). Camtasia auto-adjusts them when content is trimmed, so they stay aligned. If the user passes `--timeline-markers` they get the older absolute-time behavior, which drifts on trim.
 
 ## Verification
 

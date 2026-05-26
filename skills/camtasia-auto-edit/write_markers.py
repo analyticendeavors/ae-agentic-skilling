@@ -1,14 +1,32 @@
 """
 Stage 2 (minimal): inject detected segments as Camtasia markers into an existing .tscproj.
 
-Camtasia stores markers as keyframes on a timeline-level `toc` (table-of-contents)
-parameter. The marker time uses the project's editRate (ticks per second).
+Camtasia supports markers at TWO levels:
+
+  1. Timeline-level: stored at `timeline.parameters.toc.keyframes` with absolute
+     timeline times. Drawback: when the user ripple-deletes content, the audio
+     shifts left but timeline markers stay put, becoming misaligned.
+
+  2. Clip-level (the default this tool now uses): stored at
+     <StitchedMedia>.parameters.toc.keyframes inside a media clip group.
+     Crucially, Camtasia auto-adjusts these times when the user trims or
+     ripple-deletes content within the clip -- so they stay aligned with the
+     audio they were describing.
+
+This tool prefers clip-level. It finds the StitchedMedia whose attributes.ident
+matches the project's recording (typically a .trec file referenced in sourceBin)
+and writes markers there. If no suitable StitchedMedia is found (e.g. the user
+hasn't dragged the recording onto the timeline yet), it falls back to
+timeline-level markers with a warning.
+
+The marker time uses the project's editRate (ticks per second), typically
+705600000. Same conversion either way: ticks = seconds * editRate.
 
 Usage:
     python write_markers.py <project.tscproj> --segments segments.json [--out modified.tscproj] [--backup]
 
 The .tscproj path can be either:
-  - The folder (e.g. .../Visual Cals in Power BI.tscproj/), in which case the inner
+  - The folder (e.g. .../My Project.tscproj/), in which case the inner
     .tscproj JSON file with the matching name is patched
   - The inner JSON file directly
 """
@@ -90,19 +108,85 @@ def build_keyframes(segments: list[dict], edit_rate: int, dedupe_window_s: float
     return deduped
 
 
-def patch_project(project: dict, keyframes: list[dict], replace: bool) -> tuple[int, int]:
-    """Insert/merge keyframes into the project's parameters.toc.keyframes.
+def _recording_idents(project: dict) -> set[str]:
+    """Return the set of sourceBin idents that look like recordings (.trec).
 
-    Returns (existing_count, total_count_after).
+    Used to identify which StitchedMedia in the timeline corresponds to a
+    recording (vs. background music, intro logo, etc.).
     """
-    timeline = project.get("timeline")
-    if timeline is None:
-        raise KeyError("project has no 'timeline' key")
+    idents: set[str] = set()
+    for src in project.get("sourceBin", []) or []:
+        src_name = src.get("src", "")
+        if src_name.lower().endswith(".trec"):
+            # The ident in the timeline matches the file stem, without extension.
+            stem = src_name.rsplit(".", 1)[0]
+            idents.add(stem)
+    return idents
 
-    parameters = timeline.setdefault("parameters", {})
-    toc = parameters.setdefault("toc", {"type": "string", "keyframes": []})
-    toc.setdefault("type", "string")
-    existing = toc.get("keyframes") or []
+
+def _iter_stitched_media(node, path=None):
+    """Yield (parent_dict_holding_the_match, key) for every StitchedMedia we find.
+
+    Depth-first walk of the project dict. Yields the dicts themselves
+    so the caller can mutate parameters in place.
+    """
+    if path is None:
+        path = []
+    if isinstance(node, dict):
+        if node.get("_type") == "StitchedMedia":
+            yield node
+        for k, v in node.items():
+            yield from _iter_stitched_media(v, path + [k])
+    elif isinstance(node, list):
+        for i, item in enumerate(node):
+            yield from _iter_stitched_media(item, path + [i])
+
+
+def _find_recording_stitched_media(project: dict) -> dict | None:
+    """Find the StitchedMedia clip whose ident matches a recording in sourceBin.
+
+    Returns the StitchedMedia dict, or None if no match found.
+    """
+    rec_idents = _recording_idents(project)
+    if not rec_idents:
+        return None
+    for sm in _iter_stitched_media(project):
+        ident = (sm.get("attributes") or {}).get("ident", "")
+        if ident in rec_idents:
+            return sm
+    return None
+
+
+def patch_project(project: dict, keyframes: list[dict], replace: bool, force_timeline: bool = False) -> tuple[int, int, str]:
+    """Insert/merge keyframes into the right toc parameter.
+
+    Prefers a clip-level toc on the recording's StitchedMedia (markers travel
+    with the clip when content is trimmed). Falls back to timeline-level toc
+    if no recording StitchedMedia is found, or if force_timeline=True.
+
+    Returns (existing_count, total_count_after, location_description).
+    """
+    target_toc = None
+    location = ""
+
+    if not force_timeline:
+        sm = _find_recording_stitched_media(project)
+        if sm is not None:
+            parameters = sm.setdefault("parameters", {})
+            target_toc = parameters.setdefault("toc", {"type": "string", "keyframes": []})
+            ident = (sm.get("attributes") or {}).get("ident", "?")
+            location = f"clip-level (StitchedMedia ident={ident!r}) -- markers will move with trims"
+
+    if target_toc is None:
+        timeline = project.get("timeline")
+        if timeline is None:
+            raise KeyError("project has no 'timeline' key and no recording StitchedMedia")
+        parameters = timeline.setdefault("parameters", {})
+        target_toc = parameters.setdefault("toc", {"type": "string", "keyframes": []})
+        location = "timeline-level (no recording StitchedMedia found) -- markers will drift on trim"
+
+    target_toc.setdefault("type", "string")
+    existing = target_toc.get("keyframes") or []
 
     if replace:
         merged = keyframes
@@ -110,8 +194,8 @@ def patch_project(project: dict, keyframes: list[dict], replace: bool) -> tuple[
         merged = list(existing) + keyframes
         merged.sort(key=lambda k: k["time"])
 
-    toc["keyframes"] = merged
-    return len(existing), len(merged)
+    target_toc["keyframes"] = merged
+    return len(existing), len(merged), location
 
 
 def main() -> int:
@@ -121,7 +205,8 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=None, help="Output path. Default: overwrite input (after backup).")
     ap.add_argument("--backup", action="store_true", help="Write a .bak alongside the input before overwriting.")
     ap.add_argument("--replace", action="store_true", help="Wipe existing markers before writing new ones.")
-    ap.add_argument("--types", nargs="+", default=None, help="Only include these segment types (e.g. --types filler discourse silence).")
+    ap.add_argument("--types", nargs="+", default=None, help="Only include these segment types (e.g. --types filler silence).")
+    ap.add_argument("--timeline-markers", action="store_true", help="Force timeline-level markers (legacy behavior). Default is clip-level, which moves with trims.")
     args = ap.parse_args()
 
     inner = resolve_project_file(args.project)
@@ -146,8 +231,9 @@ def main() -> int:
             t_s = kf["time"] / edit_rate
             print(f"  {mmss(t_s):>6}  {kf['value']}", file=sys.stderr)
 
-    existing, total = patch_project(project, keyframes, replace=args.replace)
+    existing, total, location = patch_project(project, keyframes, replace=args.replace, force_timeline=args.timeline_markers)
     print(f"Markers: {existing} existing -> {total} after write", file=sys.stderr)
+    print(f"Written to: {location}", file=sys.stderr)
 
     out_path = args.out if args.out else inner
     if out_path == inner and args.backup:
