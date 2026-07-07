@@ -32,6 +32,10 @@ Claude Code automatically discovers skills in `~/.claude/skills/` on every machi
 
 Per-skill setup (Python deps, external CLIs like ffmpeg) lives in each skill's `README.md`.
 
+## Secrets
+
+`CLAUDE_CODE_OAUTH_TOKEN` (used by `pr-review.yml`) is set at the `analyticendeavors` org level, not per-repo. Do NOT add a repo-level secret with this name here — it would silently override the org-level one for this repo. Rotate at github.com/organizations/analyticendeavors/settings/secrets/actions.
+
 ## What's NOT here
 
 - Anything business-specific to AE (lead enrichment, CRM integrations, internal tooling). Those live in private repos.
