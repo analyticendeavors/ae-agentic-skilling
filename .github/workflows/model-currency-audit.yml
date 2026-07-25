@@ -1,0 +1,194 @@
+# ============================================================
+# Model Currency Audit (monthly)
+#
+# Runs at 9 AM PDT on the 21st of each month. Scans every tracked
+# file for hard-coded Claude model IDs, then diffs that inventory
+# against Anthropic's authoritative models docs to answer one
+# question: is anything we pin now superseded, deprecated, or
+# retired?
+#
+# Files a single dedicated GitHub issue ONLY when something is
+# actually out of date. Stays silent otherwise: silence is the
+# success state.
+#
+# WHY THE 21st: the estate staggers this audit so the repos
+# sharing the org OAuth token do not all report on the same morning.
+# agents-and-automation owns the 8th and website_content the 10th;
+# this repo owns the 21st.
+#
+# SCOPE BOUNDARY: this audit covers PINNED model IDs. As of install,
+# this repo pins NONE: every Claude call site here is an unpinned
+# CLI workflow, which is the correct state, because an unpinned call
+# site inherits the CLI default and tracks upstream on its own.
+# Expect a silent run every month until someone pins something. That
+# is the point: this exists so a future pin cannot go unwatched.
+# Pricing drift is out of scope.
+#
+# NOT LABELED `automated`: that label is used by other automation
+# here, and a monthly finding must not be swept up by any routine
+# that treats automated issues as short-lived. This issue is
+# managed only by this workflow: it opens on a finding and
+# auto-closes on the next clean run.
+#
+# Required secrets:
+#   CLAUDE_CODE_OAUTH_TOKEN  Claude Max OAuth token
+#
+# Estimated cost per run: $0 (OAuth token, no per-token API cost)
+# ============================================================
+
+name: Model Currency Audit
+
+on:
+  schedule:
+    - cron: "0 16 21 * *"  # 9 AM PDT (16:00 UTC) on the 21st of each month
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: model-currency-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Diff repo model IDs vs Anthropic models docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # Full checkout on purpose: the inventory half walks `git ls-files`
+      # across the whole repo, so sparse-checkout would silently under-report.
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      # This repo has no setup-claude composite action, so the CLI is
+      # installed inline, matching agent-checks.yml and the other Claude
+      # workflows here.
+      - name: Install Claude Code CLI
+        run: |
+          set -euo pipefail
+          npm install -g @anthropic-ai/claude-code
+
+      - name: Run model currency check
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          node scripts/check-model-currency.js > model_currency_summary.md
+          echo "Summary size: $(wc -c < model_currency_summary.md) bytes"
+
+      - name: Determine if findings
+        id: extract
+        run: |
+          set -euo pipefail
+          if [ "$(head -1 model_currency_summary.md)" = "NONE" ]; then
+            echo "has_findings=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_findings=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload summary as artifact
+        if: steps.extract.outputs.has_findings == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: model-currency-summary
+          path: model_currency_summary.md
+          retention-days: 90
+
+      - name: Open or refresh model currency issue
+        if: steps.extract.outputs.has_findings == 'true'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const summary = fs.readFileSync('model_currency_summary.md', 'utf8');
+            const today = new Date().toISOString().split('T')[0];
+            const TITLE = 'Model currency: Claude model IDs behind current';
+            const LABEL = 'model-currency';
+
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              `> Last checked: ${today}. Full summary artifact: [download from this run](${runUrl}).`,
+              '',
+              summary,
+              '',
+              '---',
+              '**Context:**',
+              'When this audit was installed, this repo pinned NO model IDs: every Claude call site was an unpinned CLI workflow inheriting the CLI default, which is the intended state.',
+              '',
+              'So a finding here almost certainly means a model ID was newly pinned somewhere. Check whether that pin is deliberate. If the tier genuinely matters for that job, keep it and bump it to the recommended ID. If it does not, the lower-maintenance fix is to remove the pin and let the call site track upstream on its own.',
+              '',
+              'Before assuming a code default is live, check any deployed Function App or Container App for an env var override. A deployed env var wins over the code default.',
+              '',
+              'Auto-closes on the next clean run. Deliberately not labeled `automated`, so no routine that treats automated issues as short-lived can close it before the next monthly run.',
+              '',
+              '*Model Currency Audit | monthly diff against Anthropic models docs*',
+            ].join('\n');
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: LABEL,
+              state: 'open',
+              per_page: 5,
+            });
+            const open = existing.data.find(i => i.title === TITLE);
+            if (open) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: open.number,
+                body,
+              });
+              core.info(`Refreshed model currency issue #${open.number}`);
+            } else {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: TITLE,
+                body,
+                labels: [LABEL],
+                assignees: ['ae-reid-havens'],
+              });
+              core.info(`Opened model currency issue #${created.data.number}`);
+            }
+
+      - name: Auto-close model currency issue if now clear
+        if: steps.extract.outputs.has_findings == 'false'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const TITLE = 'Model currency: Claude model IDs behind current';
+            const LABEL = 'model-currency';
+            const today = new Date().toISOString().split('T')[0];
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: LABEL,
+              state: 'open',
+              per_page: 5,
+            });
+            const open = existing.data.find(i => i.title === TITLE);
+            if (!open) {
+              core.info('No open model currency issue and no findings. Silent run.');
+              return;
+            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: open.number,
+              body: `Resolved as of ${today}: every pinned Claude model ID is current. Auto-closing.`,
+            });
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: open.number,
+              state: 'closed',
+            });
+            core.info(`Auto-closed model currency issue #${open.number}`);
