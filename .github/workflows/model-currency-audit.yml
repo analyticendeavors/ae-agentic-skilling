@@ -31,9 +31,22 @@
 # auto-closes on the next clean run.
 #
 # Required secrets:
-#   CLAUDE_CODE_OAUTH_TOKEN  Claude Max OAuth token
+#   ANTHROPIC_API_KEY  Repo-level API key, NOT the org OAuth token.
 #
-# Estimated cost per run: $0 (OAuth token, no per-token API cost)
+# WHY NOT THE ORG OAUTH TOKEN: this repo is PUBLIC. The org secret
+# CLAUDE_CODE_OAUTH_TOKEN has visibility: private, which on GitHub means
+# private and internal repos only, so a public repo cannot read it. The
+# existing pr-review.yml here hits the same wall and reports it as "PR is
+# from a fork", which is misleading: the cause is repo visibility, not forks.
+#
+# Do NOT resolve this by widening the org secret to visibility: all. That
+# would expose a personal Claude Max OAuth token to workflows in every public
+# repo in the org. An API key is used here instead because, unlike an OAuth
+# subscription token, it can be revoked and spend-limited on its own.
+#
+# Estimated cost per run: a few cents. Unlike the other repos in this estate,
+# this one authenticates with an API key rather than the $0-marginal-cost
+# OAuth token, so its runs are billed per token. One run per month.
 # ============================================================
 
 name: Model Currency Audit
@@ -80,7 +93,7 @@ jobs:
 
       - name: Run model currency check
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           set -euo pipefail
           node scripts/check-model-currency.js > model_currency_summary.md

@@ -31,7 +31,10 @@
  *                      audit sees before trusting what it says.
  *
  * Required env (unless --inventory-only):
- *   CLAUDE_CODE_OAUTH_TOKEN  Reid's Claude Max OAuth token
+ *   Claude CLI credentials. Either CLAUDE_CODE_OAUTH_TOKEN (a Claude Max
+ *   OAuth token, $0 per call) or ANTHROPIC_API_KEY (billed per token).
+ *   Which one applies depends on the repo; public repos cannot read the
+ *   org-level OAuth secret, so they use an API key.
  */
 
 'use strict';
@@ -385,13 +388,13 @@ Only emit sections that have at least one entry. Do not include empty sections.`
 
     if (r.error && r.error.code === 'ETIMEDOUT') {
         console.error('Claude CLI did not return within 5 minutes and was killed.');
-        console.error('Usually an auth or rate-limit stall. Check CLAUDE_CODE_OAUTH_TOKEN, then re-run the workflow.');
+        console.error('Usually an auth or rate-limit stall. Check the CLI credential this repo uses (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY), then re-run.');
         process.exit(1);
     }
 
     if (r.status !== 0) {
         console.error('Claude CLI failed (exit', r.status + '):', r.stderr || '(no stderr)');
-        console.error('Check that CLAUDE_CODE_OAUTH_TOKEN is set and the pinned CLI version still supports these flags.');
+        console.error("Check that this repo's CLI credential is set (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY) and that the CLI still supports these flags.");
         process.exit(1);
     }
 
