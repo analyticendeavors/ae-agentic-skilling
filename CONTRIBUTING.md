@@ -68,7 +68,9 @@ The same rules live in [`CLAUDE.md`](CLAUDE.md), which is the source of truth. H
 
 ## Security note for fork PRs
 
-The PR-review workflow runs on `pull_request` events, which means **PRs from forks do not have access to repository secrets** — including `CLAUDE_CODE_OAUTH_TOKEN`. This is intentional: it prevents a malicious PR from exfiltrating the token.
+The PR-review workflow runs on `pull_request` events, which means **PRs from forks do not have access to repository secrets** — including `ANTHROPIC_API_KEY`, which is what this repo's workflows authenticate with. This is intentional: it prevents a malicious PR from exfiltrating the key.
+
+If a review is skipped, the workflow now says which of the two causes applied: a genuine fork PR, or a missing `ANTHROPIC_API_KEY` on a same-repo branch. Those need different fixes, so it no longer reports one as the other.
 
 The practical effect: **PRs from forks will not get auto-review** until a maintainer pushes the branch into the main repo and runs the workflow manually. Maintainers can do this via `gh pr checkout <PR#>` followed by `git push origin <branch>:<branch>` into a maintainer-controlled branch.
 
