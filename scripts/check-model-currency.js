@@ -106,11 +106,11 @@ const ARGS_ARRAY_LOOKBEHIND = 10;
 
 // Does the ONE invocation at `idx` pin a model with --model?
 //
-// Testing the whole file (the previous behaviour) meant a single pinned call
-// marked every other call in that file as pinned, so genuinely unpinned calls
-// vanished from the report. The two invocation shapes need different handling,
-// and a simple line window around the match is not enough: three consecutive
-// one-line shell commands would all see each other's flags.
+// Scope is the whole difficulty. Testing the whole file lets a single pinned
+// call mark every other call in it as pinned, so genuinely unpinned calls
+// vanish from the report. A line window around the match is no better: three
+// consecutive one-line shell commands sit inside each other's windows. So each
+// invocation shape resolves only its own arguments.
 function invocationPinsModel(lines, idx) {
     const text = lines[idx];
 

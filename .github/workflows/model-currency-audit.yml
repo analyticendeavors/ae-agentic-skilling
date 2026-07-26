@@ -55,7 +55,11 @@ jobs:
   audit:
     name: Diff repo model IDs vs Anthropic models docs
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 15, not 10: the script bounds its own Claude CLI call at 5 minutes so a
+    # hung auth stall reports its real cause. Checkout, setup-node, a global npm
+    # install of the CLI and two doc fetches sit in front of that, so a 10 minute
+    # job cap can kill the run before that diagnostic is ever printed.
+    timeout-minutes: 15
 
     steps:
       # Full checkout on purpose: the inventory half walks `git ls-files`
