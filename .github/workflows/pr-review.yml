@@ -6,7 +6,9 @@
 # to Claude via the CLI (claude -p). Posts findings as a PR
 # comment (updates on subsequent pushes).
 #
-# Auth: CLAUDE_CODE_OAUTH_TOKEN (Max subscription, no API cost)
+# Auth: ANTHROPIC_API_KEY (repo-level secret, billed per token). This repo is
+# public, so it cannot read the org-level CLAUDE_CODE_OAUTH_TOKEN, which is
+# scoped to private repositories.
 #
 # Security note: runs on `pull_request` (NOT `pull_request_target`).
 # This means PRs from forks cannot access secrets and will skip
@@ -256,16 +258,29 @@ jobs:
         id: review
         if: steps.changes.outputs.no_changes != 'true'
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # This repo is PUBLIC, so it cannot read the org secret
+          # CLAUDE_CODE_OAUTH_TOKEN (visibility: private = private and internal
+          # repos only). It authenticates with a repo-level API key instead.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           set -euo pipefail
 
-          # Fork PRs cannot access secrets. Detect and skip cleanly.
-          if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+          # A missing key means one of two things, and they need different fixes,
+          # so do not guess. Fork PRs genuinely cannot read secrets. But this repo
+          # also spent time reporting "from a fork" on ordinary same-repo branches,
+          # because it was reading an org secret a public repo can never see. That
+          # wrong message is why the silent no-op went unnoticed.
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
             {
               echo "## PR Review Agent Skipped"
               echo ""
-              echo "This PR appears to be from a fork. PRs from forks do not have access to repository secrets (this is a security feature) so the AI review is skipped."
+              if [ "${{ github.event_name }}" = "pull_request" ] && [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+                echo "This PR is from a fork. Fork PRs cannot read repository secrets (a security feature), so the AI review is skipped."
+              else
+                echo "No \`ANTHROPIC_API_KEY\` secret is configured for this repository, so the AI review could not run."
+                echo ""
+                echo "This is a configuration gap, not a fork restriction. This repo is public and therefore cannot read the org-level \`CLAUDE_CODE_OAUTH_TOKEN\`, which is scoped to private repositories."
+              fi
               echo ""
               echo "A maintainer can run the review manually after reviewing the PR contents."
             } > review_result.txt
