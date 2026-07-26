@@ -6,7 +6,9 @@
 # to Claude via the CLI (claude -p). Posts findings as a PR
 # comment (updates on subsequent pushes).
 #
-# Auth: CLAUDE_CODE_OAUTH_TOKEN (Max subscription, no API cost)
+# Auth: ANTHROPIC_API_KEY (repo-level secret, billed per token). This repo is
+# public, so it cannot read the org-level CLAUDE_CODE_OAUTH_TOKEN, which is
+# scoped to private repositories.
 #
 # Security note: runs on `pull_request` (NOT `pull_request_target`).
 # This means PRs from forks cannot access secrets and will skip
@@ -44,6 +46,13 @@ jobs:
 
       - name: Build review prompt
         id: changes
+        env:
+          # PR_TITLE is attacker-controlled free text. Interpolating ${{ }} into
+          # the script body below would splice it into the shell source before
+          # bash parses it, so a crafted title could break out of its quotes and
+          # run commands. Passing it as env keeps it data.
+          PR_NUMBER: ${{ github.event.pull_request.number || 'manual' }}
+          PR_TITLE: ${{ github.event.pull_request.title || 'Manual run' }}
         run: |
           set -eo pipefail
           # Note: -u omitted intentionally. File content and diffs contain literal
@@ -196,9 +205,9 @@ jobs:
             printf '\n=== END FILE ===\n' >> "$FILE_CONTENTS_FILE"
           done <<< "$FILES"
 
-          # Build the full prompt
-          PR_NUMBER="${{ github.event.pull_request.number || 'manual' }}"
-          PR_TITLE="${{ github.event.pull_request.title || 'Manual run' }}"
+          # Build the full prompt. PR_NUMBER and PR_TITLE arrive via this step's
+          # env: block rather than being interpolated here, so a crafted PR title
+          # stays data instead of becoming shell source.
 
           {
             echo "You are reviewing a Pull Request for the ae-agentic-skilling repository -- a PUBLIC, open-source collection of reusable Claude Code skills. All context is provided below; do NOT try to read files from disk."
@@ -256,16 +265,33 @@ jobs:
         id: review
         if: steps.changes.outputs.no_changes != 'true'
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # This repo is PUBLIC, so it cannot read the org secret
+          # CLAUDE_CODE_OAUTH_TOKEN (visibility: private = private and internal
+          # repos only). It authenticates with a repo-level API key instead.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Passed as env rather than interpolated into the script below. GitHub
+          # substitutes ${{ }} into the shell source before bash parses it, so
+          # event-derived values belong in variables, not in the program text.
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
-          # Fork PRs cannot access secrets. Detect and skip cleanly.
-          if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+          # An empty key means either a fork PR or a missing repo secret.
+          # Distinguish them, because the fixes differ.
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
             {
               echo "## PR Review Agent Skipped"
               echo ""
-              echo "This PR appears to be from a fork. PRs from forks do not have access to repository secrets (this is a security feature) so the AI review is skipped."
+              # HEAD_REPO is empty on workflow_dispatch, hence the :- default.
+              if [ "${EVENT_NAME:-}" = "pull_request" ] && [ "${HEAD_REPO:-}" != "${BASE_REPO:-}" ]; then
+                echo "This PR is from a fork. Fork PRs cannot read repository secrets (a security feature), so the AI review is skipped."
+              else
+                echo "No \`ANTHROPIC_API_KEY\` secret is configured for this repository, so the AI review could not run."
+                echo ""
+                echo "This is a configuration gap, not a fork restriction. This repo is public and therefore cannot read the org-level \`CLAUDE_CODE_OAUTH_TOKEN\`, which is scoped to private repositories."
+              fi
               echo ""
               echo "A maintainer can run the review manually after reviewing the PR contents."
             } > review_result.txt

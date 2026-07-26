@@ -34,7 +34,11 @@ Per-skill setup (Python deps, external CLIs like ffmpeg) lives in each skill's `
 
 ## Secrets
 
-`CLAUDE_CODE_OAUTH_TOKEN` (used by `pr-review.yml`) is set at the `analyticendeavors` org level, not per-repo. Do NOT add a repo-level secret with this name here — it would silently override the org-level one for this repo. Rotate at github.com/organizations/analyticendeavors/settings/secrets/actions.
+`ANTHROPIC_API_KEY` is a **repo-level** secret and is what the workflows here use (`pr-review.yml`, `model-currency-audit.yml`).
+
+This repo is **public**, so it cannot read the org-level `CLAUDE_CODE_OAUTH_TOKEN`: that secret has `visibility: private`, meaning private and internal repositories only. Workflows here are therefore billed per token rather than running free on a Max subscription.
+
+Do NOT add `CLAUDE_CODE_OAUTH_TOKEN` as a repo-level secret here. A repo-level copy shadows the org-level one and silently survives org-level rotation, so a stale token can sit unnoticed indefinitely. Rotate the org secret at github.com/organizations/analyticendeavors/settings/secrets/actions; rotate this repo's API key in the Anthropic Console.
 
 ## What's NOT here
 
