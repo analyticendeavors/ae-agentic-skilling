@@ -10,7 +10,7 @@ Source of truth for PR reviews in this repository. The `pr-review.yml` workflow 
 4. Skills with Python dependencies must include a `requirements.txt` with **pinned versions** (e.g., `faster-whisper==1.2.1`, not `faster-whisper>=1.0`)
 5. Skills with external CLI dependencies (ffmpeg, etc.) must document them in the skill's README
 
-## Doc-staleness rule (important)
+## Doc-staleness rule
 
 If a PR modifies a skill's scripts, it must also update the skill's `README.md` and/or `SKILL.md` in the same PR. PRs that change behavior without updating docs are flagged. The exception: pure refactors that don't change observable behavior (rename a variable, restructure code without changing what it does) can pass without doc updates if the PR description clearly states "no behavior change."
 
