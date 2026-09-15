@@ -47,7 +47,7 @@ If a skill or workflow needs to call an LLM:
 
    Two cheaper-looking fixes were considered and rejected:
    - *Widen the org secret to `visibility: all`.* Rejected: that exposes a personal Claude Max OAuth token to workflows in every public repo in the org.
-   - *Add `CLAUDE_CODE_OAUTH_TOKEN` as a repo-level secret here.* Rejected: `README.md` already forbids exactly that, because a repo-level copy shadows the org secret and silently survives org-level rotation. That failure mode is not hypothetical; another repo in this estate is still carrying a token from a rotation it missed.
+   - *Add `CLAUDE_CODE_OAUTH_TOKEN` as a repo-level secret here.* Rejected: `README.md` already forbids exactly that, because a repo-level copy shadows the org secret and silently survives org-level rotation.
 
    An API key is used because, unlike a subscription OAuth token, it can be revoked and spend-limited on its own. The cost is real but small: roughly a couple of dollars a year at this repo's PR volume.
 2. **Only use the Anthropic SDK** (`@anthropic-ai/sdk` or `anthropic`) when programmatic tool use with multi-turn dispatch is genuinely required.
