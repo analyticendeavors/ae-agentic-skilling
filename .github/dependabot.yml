@@ -6,8 +6,12 @@
 #   - GitHub Actions versions (.github/workflows/)
 #
 # Schedule: monthly on Fridays (low churn for a skills repo).
-# Patch updates auto-merge via dependabot-auto-merge.yml.
-# Minor/major still need human review.
+#
+# Merging is not done here. dependency-sweep.yml in
+# analyticendeavors/agents-and-automation merges patch and minor
+# updates (security updates included) once checks are green, and
+# emails a weekly digest of majors, red CI and anything else held.
+# Majors are grouped apart so one never holds the other updates back.
 # ============================================================
 
 version: 2
@@ -29,9 +33,17 @@ updates:
       prefix: deps
       include: scope
     groups:
-      all:
+      non-major:
         patterns:
           - "*"
+        update-types:
+          - "minor"
+          - "patch"
+      major:
+        patterns:
+          - "*"
+        update-types:
+          - "major"
 
   # GitHub Actions
   - package-ecosystem: github-actions
@@ -53,3 +65,11 @@ updates:
       actions:
         patterns:
           - "*"
+        update-types:
+          - "minor"
+          - "patch"
+      actions-major:
+        patterns:
+          - "*"
+        update-types:
+          - "major"
